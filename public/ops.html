@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-office · 관제실</title>
+<style>
+  :root { --bg: #05080b; --panel: #0b1117; --line: #16313a; --text: #b9f5d0; --dim: #4f7d6a; --hot: #39ff88; --cyan: #5ce1ff; --err: #ff5c6c; --intern: #d8b4fe; --user: #ffd166; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; padding: 12px 16px; background: var(--bg); color: var(--text); font: 13px/1.45 ui-monospace, Consolas, 'D2Coding', monospace; display: grid; grid-template-rows: auto 1fr; gap: 12px; overflow: hidden; }
+  #hud { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 8px 16px; }
+  #clock { font-size: 34px; color: var(--hot); text-shadow: 0 0 12px #39ff8866; font-variant-numeric: tabular-nums; }
+  #status { color: var(--cyan); }
+  #status::before { content: '●'; margin-right: 6px; animation: blink 1.2s steps(1) infinite; }
+  .ctr { display: flex; flex-direction: column; align-items: flex-end; margin-left: auto; }
+  .ctr + .ctr { margin-left: 0; }
+  .ctr b { font-size: 24px; color: var(--hot); font-variant-numeric: tabular-nums; }
+  .ctr b.err { color: var(--err); }
+  .ctr span { color: var(--dim); font-size: 11px; }
+  #ops { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 12px; min-height: 0; }
+  #panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); gap: 12px; min-height: 0; }
+  #panes:has(> .pane:only-of-type) { grid-template-columns: minmax(0, 1fr); }
+  .pane, #side section { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; }
+  h2 { margin: 0; padding: 4px 10px; font-size: 12px; font-weight: normal; color: var(--cyan); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log { flex: 1; overflow: hidden; padding: 6px 10px; display: flex; flex-direction: column; justify-content: flex-end; }
+  .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; animation: type 0.4s steps(28) both; }
+  .line.old { animation: none; opacity: 0.6; }
+  .line.user { color: var(--user); }
+  .line.sub { color: var(--intern); }
+  .line.err { color: var(--err); }
+  .log .line:last-child::after { content: '▌'; color: var(--hot); animation: blink 1s steps(1) infinite; }
+  @keyframes type { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+  @keyframes blink { 50% { opacity: 0; } }
+  #side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  #side section { padding-bottom: 8px; }
+  #side section:last-child { flex: 1; overflow: hidden; }
+  #rate { width: 100%; height: 110px; display: block; }
+  .bar { display: grid; grid-template-columns: 84px 1fr 44px; gap: 8px; align-items: center; padding: 1px 10px; }
+  .bar i { display: block; height: 8px; background: linear-gradient(90deg, var(--hot), var(--cyan)); border-radius: 2px; transition: width 0.4s; }
+  .bar span:last-child { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  #interns div { padding: 2px 10px; color: var(--intern); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #interns .none { color: var(--dim); }
+  #tag { position: fixed; right: 10px; bottom: 6px; color: var(--dim); font-size: 11px; }
+  #empty { color: var(--user); }
+  @media (max-width: 900px) {
+    body { overflow: auto; grid-template-rows: auto auto; }
+    #ops { grid-template-columns: minmax(0, 1fr); }
+    #panes { grid-template-columns: minmax(0, 1fr); grid-auto-rows: 280px; }
+    #clock { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+  <header id="hud">
+    <div id="clock"></div>
+    <div id="status">연결 중</div>
+    <div class="ctr"><b id="c-tools">0</b><span>도구 호출</span></div>
+    <div class="ctr"><b id="c-out">0</b><span>출력 토큰</span></div>
+    <div class="ctr"><b id="c-errors" class="err">0</b><span>에러</span></div>
+    <div class="ctr"><b id="c-interns">0</b><span>투입 인턴</span></div>
+  </header>
+  <main id="ops">
+    <div id="panes"><p id="empty" hidden></p></div>
+    <div id="side">
+      <section><h2>처리량 · 10초당 줄 수 · 최근 5분</h2><canvas id="rate"></canvas></section>
+      <section><h2>방별 작업</h2><div id="places"></div></section>
+      <section><h2>일하는 인턴</h2><div id="interns"></div></section>
+    </div>
+  </main>
+  <div id="tag" hidden>↻ 다시 보기</div>
+  <script type="module">
+    import { ROOMS } from './art.mjs';
+    import { bubbleOf, fmtDur, sceneAt, timeline } from './scene.mjs';
+    import { buckets, pickOps, replayClock, stats } from './ops.mjs';
+
+    const $ = (id) => document.getElementById(id);
+    const SPEED = 8;          // 다시 보기 배속
+    const HOLD = 3000;        // 다시 보기 끝에서 멈추는 시간
+    const MAX_LINES = 200;    // 칸마다 남기는 줄
+    const RATE_SIZE = 10000;  // 처리량 막대 하나 = 10초
+    const RATE_N = 30;        // 5분
+    const hhmmss = (t) => new Date(t).toTimeString().slice(0, 8);
+    const fmtK = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+    let panes = [];
+    let reveals = []; // 줄이 올라온 시각(처리량 그래프)
+
+    function makePane(sess, live) {
+      const el = document.createElement('section');
+      el.className = 'pane';
+      const h = document.createElement('h2');
+      h.textContent = `${live ? '● ' : ''}${sess.project} · ${sess.title}`;
+      h.title = h.textContent;
+      const log = document.createElement('div');
+      log.className = 'log';
+      el.append(h, log);
+      $('panes').append(el);
+      const p = { id: sess.id, live, el, log, steps: new Map(), sorted: [], agents: new Map(), tl: timeline([]), lines: new Map(), pending: new Map(), lap: 0, t0: performance.now(), clock: 0, primed: false };
+      p.es = new EventSource(`/stream?session=${encodeURIComponent(sess.id)}`);
+      p.es.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.session) {
+          p.steps = new Map();
+          p.agents = new Map();
+        }
+        for (const s of msg.steps ?? []) p.steps.set(s.id, s);
+        for (const a of msg.agents ?? []) p.agents.set(a.id, a);
+        p.sorted = [...p.steps.values()].sort((a, b) => a.t - b.t);
+        p.tl = timeline(p.sorted);
+        if (!live) {
+          p.es.close(); // 다시 보기는 한 번 받으면 연결을 놓는다
+          p.t0 = performance.now();
+        }
+      };
+      return p;
+    }
+
+    function finish(d, s) {
+      d.textContent = `${d.dataset.base} (${fmtDur(s.end - s.t)})${s.ok === false ? ' ✗' : ''}`;
+      if (s.ok === false) d.classList.add('err');
+    }
+
+    function addLine(p, s, quiet) {
+      const d = document.createElement('div');
+      d.className = `line${quiet ? ' old' : ''}${s.who !== 'main' ? ' sub' : s.kind === 'user' ? ' user' : ''}`;
+      const who = s.who !== 'main' ? `↳ ${p.agents.get(s.who)?.role ?? '인턴'} · ` : '';
+      d.dataset.base = `${hhmmss(s.t)}  ${who}${bubbleOf(s)}`;
+      d.textContent = d.dataset.base + (s.kind === 'tool' ? ' …' : '');
+      p.log.append(d);
+      p.lines.set(s.id, d);
+      if (s.kind === 'tool') {
+        if (s.end != null && s.end <= p.clock) finish(d, s);
+        else p.pending.set(s.id, d);
+      }
+      if (!quiet) reveals.push(Date.now());
+    }
+
+    function tickPane(p, now) {
+      if (p.live) p.clock = Math.max(Date.now(), p.tl.end);
+      else {
+        const r = replayClock(p.tl, now - p.t0, SPEED, HOLD);
+        p.clock = r.t;
+        if (r.lap !== p.lap) {
+          p.lap = r.lap;
+          p.log.replaceChildren();
+          p.lines.clear();
+          p.pending.clear();
+        }
+      }
+      const fresh = [];
+      for (const s of p.sorted) {
+        if (s.t > p.clock) break;
+        if (!p.lines.has(s.id)) fresh.push(s);
+      }
+      // 실시간 칸을 처음 열 때는 지난 기록 끝부분만 조용히 깔아 둔다(처리량에 안 셈)
+      const quiet = p.live && !p.primed;
+      if (quiet && p.sorted.length) p.primed = true;
+      if (quiet) for (const s of fresh.slice(0, -MAX_LINES)) p.lines.set(s.id, null);
+      for (const s of quiet ? fresh.slice(-MAX_LINES) : fresh) addLine(p, s, quiet);
+      for (const [id, d] of p.pending) {
+        const s = p.steps.get(id);
+        if (s?.end != null && s.end <= p.clock) {
+          finish(d, s);
+          p.pending.delete(id);
+        }
+      }
+      while (p.log.childElementCount > MAX_LINES) {
+        const first = p.log.firstElementChild;
+        for (const [id, d] of p.pending) if (d === first) p.pending.delete(id);
+        first.remove();
+      }
+    }
+
+    function drawRate() {
+      const c = $('rate');
+      const w = (c.width = c.clientWidth * devicePixelRatio);
+      const h = (c.height = c.clientHeight * devicePixelRatio);
+      const ctx = c.getContext('2d');
+      const counts = buckets(reveals, Date.now(), RATE_SIZE, RATE_N);
+      const max = Math.max(5, ...counts);
+      const bw = w / RATE_N;
+      const g = ctx.createLinearGradient(0, h, 0, 0);
+      g.addColorStop(0, '#39ff88');
+      g.addColorStop(1, '#5ce1ff');
+      ctx.fillStyle = g;
+      counts.forEach((n, i) => {
+        const bh = (n / max) * (h - 4);
+        ctx.fillRect(i * bw + 1, h - bh, bw - 2, bh);
+      });
+    }
+
+    function tick() {
+      const now = performance.now();
+      $('clock').textContent = hhmmss(Date.now());
+      const tot = { tools: 0, out: 0, errors: 0, interns: 0 };
+      const counts = {};
+      const working = [];
+      for (const p of panes) {
+        tickPane(p, now);
+        const agents = [...p.agents.values()];
+        const st = stats(p.sorted, agents, p.clock);
+        for (const k of Object.keys(tot)) tot[k] += st[k];
+        const sc = sceneAt(p.sorted, agents, p.clock);
+        for (const [place, n] of Object.entries(sc.counts)) counts[place] = (counts[place] ?? 0) + n;
+        for (const it of sc.interns) working.push(`● ${it.role} — ${it.bubble ?? ''} (${fmtDur(Math.max(0, p.clock - (p.agents.get(it.id)?.start ?? p.clock)))})`);
+      }
+      for (const k of Object.keys(tot)) $(`c-${k}`).textContent = fmtK(tot[k]);
+      const max = Math.max(1, ...Object.values(counts));
+      $('places').replaceChildren(...Object.keys(ROOMS).map((place) => {
+        const row = document.createElement('div');
+        row.className = 'bar';
+        const name = document.createElement('span');
+        name.textContent = ROOMS[place].name;
+        const bar = document.createElement('i');
+        bar.style.width = `${((counts[place] ?? 0) / max) * 100}%`;
+        const n = document.createElement('span');
+        n.textContent = fmtK(counts[place] ?? 0);
+        row.append(name, bar, n);
+        return row;
+      }));
+      $('interns').replaceChildren(...(working.length ? working : [null]).map((t) => {
+        const d = document.createElement('div');
+        d.textContent = t ?? '지금 일하는 인턴 없음';
+        if (!t) d.className = 'none';
+        return d;
+      }));
+      const cut = Date.now() - RATE_SIZE * RATE_N;
+      reveals = reveals.filter((t) => t >= cut);
+      drawRate();
+    }
+
+    async function refresh() {
+      let data;
+      try {
+        data = await (await fetch('/sessions')).json();
+      } catch {
+        $('status').textContent = '서버에 연결하지 못함';
+        return;
+      }
+      const pick = pickOps(data.sessions);
+      const live = pick.mode === 'live';
+      const keep = panes.filter((p) => pick.ids.includes(p.id) && p.live === live);
+      for (const p of panes) {
+        if (keep.includes(p)) continue;
+        p.es.close();
+        p.el.remove();
+      }
+      panes = [...keep, ...pick.ids.filter((id) => !keep.some((p) => p.id === id)).map((id) => makePane(data.sessions.find((s) => s.id === id), live))];
+      $('status').textContent = live ? `실시간 · 세션 ${panes.length}개` : `세션 ${panes.length}개 모니터링`;
+      $('tag').hidden = live;
+      const empty = $('empty');
+      empty.hidden = panes.length > 0;
+      empty.textContent = data.found ? '세션 기록이 없습니다.' : `클로드 코드 기록을 찾지 못함 (${data.root})`;
+    }
+
+    await refresh();
+    setInterval(tick, 200);
+    setInterval(refresh, 10000);
+    tick();
+  </script>
+</body>
+</html>
