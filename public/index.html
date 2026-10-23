@@ -62,10 +62,17 @@
   .m-err { background: var(--err); }
   .m-intern { background: var(--intern); }
   #note { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+  #top a { color: var(--dim); font-size: 13px; }
+  /* 여러 세션 보기의 칸 하나(?mini=1): 사무실만, 누르면 큰 화면 */
+  body.mini { padding: 0; cursor: pointer; overflow: hidden; }
+  body.mini #top, body.mini aside, body.mini #play, body.mini #note { display: none; }
+  body.mini #main { display: block; }
+  body.mini #office { border-radius: 0; }
+  body.mini .room-hit { pointer-events: none; }
 </style>
 </head>
 <body>
-  <div id="top"><h1>🏢 claude-office</h1><select id="sessions"></select><span id="summary"></span><span id="conn"></span></div>
+  <div id="top"><h1>🏢 claude-office</h1><select id="sessions"></select><span id="summary"></span><span id="conn"></span><a href="grid.html">여러 세션 보기</a></div>
   <p id="empty" hidden></p>
   <div id="main">
     <div id="office"><canvas id="room"></canvas></div>

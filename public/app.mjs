@@ -5,6 +5,7 @@ import { bubbleOf, fmtDur, markers, sceneAt, timeline } from './scene.mjs';
 const $ = (id) => document.getElementById(id);
 const MAX_FEED = 300;  // ponytail: 피드는 최근 300줄만 그린다
 const RENDER_MS = 100; // 장면은 0.1초마다(데이터가 바뀌면 바로)
+const mini = new URLSearchParams(location.search).has('mini'); // 여러 세션 보기의 칸 하나: 사무실만, 늘 마지막 순간
 
 let current = null;     // 보고 있는 세션 id
 let es = null;
@@ -31,6 +32,13 @@ canvas.width = OFFICE_W;
 canvas.height = OFFICE_H;
 Object.assign($('office').style, { width: `${OFFICE_W}px`, height: `${OFFICE_H}px` });
 document.querySelector('aside').style.height = `${OFFICE_H}px`; // 피드 칸을 사무실 높이에 맞춘다
+if (mini) {
+  document.body.classList.add('mini');
+  const fit = () => ($('office').style.zoom = String(innerWidth / OFFICE_W));
+  addEventListener('resize', fit);
+  fit();
+  document.body.onclick = () => (top.location.href = `/?session=${encodeURIComponent(current)}`);
+}
 const sheet = new Image();
 sheet.onload = () => drawOffice(canvas.getContext('2d'), sheet);
 sheet.src = 'art/indoor.png';
@@ -284,7 +292,7 @@ function frame(ts) {
       setMode('pause');
     }
   }
-  if (mode === 'live') v = tl.total;
+  if (mode === 'live' || mini) v = tl.total;
   if (ts - lastRender >= RENDER_MS || version !== renderedVersion || dragging) {
     lastRender = ts;
     renderedVersion = version;

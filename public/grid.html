@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-office · 여러 세션</title>
+<style>
+  :root { --bg: #0f1419; --panel: #182028; --line: #2a3440; --text: #d8dee6; --dim: #8593a3; --warn: #ffcc4d; --good: #4ade80; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px 16px; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+  #top { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+  #top h1 { font-size: 16px; margin: 0; }
+  a { color: var(--dim); font-size: 13px; }
+  #empty { color: var(--warn); }
+  #cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 900px) { #cells { grid-template-columns: minmax(0, 1fr); } }
+  .cell { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .cell h2 { display: flex; gap: 8px; align-items: center; margin: 0; padding: 4px 10px; font-size: 13px; font-weight: normal; border-bottom: 1px solid var(--line); }
+  .cell h2 span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cell h2 .live { flex: none; color: var(--good); }
+  .cell iframe { display: block; width: 100%; aspect-ratio: 1056 / 768; border: 0; }
+  button, select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font: inherit; cursor: pointer; }
+  .add { display: grid; place-items: center; align-self: start; min-height: 160px; border-style: dashed; }
+  .add select { max-width: 90%; }
+</style>
+</head>
+<body>
+  <div id="top"><h1>🏢 claude-office · 여러 세션</h1><a href="/">하나만 보기</a></div>
+  <p id="empty" hidden></p>
+  <div id="cells"></div>
+  <script type="module">
+    import { MAX_CELLS, pickCells } from './grid.mjs';
+
+    const box = document.getElementById('cells');
+    const cells = new Map(); // id → 칸 요소(옮기면 iframe이 다시 읽히므로 붙이고 떼기만 한다)
+    let sessions = [];
+
+    const label = (s) => `${s.project} · ${s.title}`;
+    const saveUrl = () => history.replaceState(null, '', `?s=${[...cells.keys()].map(encodeURIComponent).join(',')}`);
+
+    const add = document.createElement('div');
+    add.className = 'cell add';
+    const pick = document.createElement('select');
+    add.append(pick);
+    pick.onchange = () => {
+      if (pick.value) addCell(pick.value);
+      refreshAdd();
+      saveUrl();
+    };
+    function refreshAdd() {
+      const first = new Option('+ 세션 추가', '');
+      pick.replaceChildren(first, ...sessions.filter((s) => !cells.has(s.id)).map((s) => new Option(`${s.live ? '● ' : ''}${label(s)}`, s.id)));
+      add.hidden = cells.size >= MAX_CELLS;
+    }
+
+    function addCell(id) {
+      const s = sessions.find((x) => x.id === id);
+      const el = document.createElement('div');
+      el.className = 'cell';
+      const h = document.createElement('h2');
+      const live = document.createElement('b');
+      live.className = 'live';
+      live.textContent = s.live ? '●' : '';
+      const title = document.createElement('span');
+      title.textContent = label(s);
+      title.title = title.textContent;
+      const close = document.createElement('button');
+      close.textContent = '✕';
+      close.title = '닫기';
+      close.onclick = () => {
+        el.remove();
+        cells.delete(id);
+        refreshAdd();
+        saveUrl();
+      };
+      h.append(live, title, close);
+      const frame = document.createElement('iframe');
+      frame.src = `/?session=${encodeURIComponent(id)}&mini=1`;
+      frame.title = label(s);
+      el.append(h, frame);
+      box.insertBefore(el, add);
+      cells.set(id, el);
+    }
+
+    const empty = (text) => Object.assign(document.getElementById('empty'), { hidden: false, textContent: text });
+    try {
+      const data = await (await fetch('/sessions')).json();
+      if (!data.found) empty(`클로드 코드 기록을 찾지 못함 (${data.root})`);
+      else if (!data.sessions.length) empty('세션 기록이 없습니다.');
+      sessions = data.sessions;
+      box.append(add);
+      const asked = new URLSearchParams(location.search).get('s');
+      for (const id of pickCells(sessions, asked ? asked.split(',') : null)) addCell(id);
+      refreshAdd();
+      saveUrl();
+    } catch {
+      empty('서버에 연결하지 못했습니다. claude-office 서버가 켜져 있는지 확인해 주세요.');
+    }
+  </script>
+</body>
+</html>
