@@ -41,7 +41,6 @@
   .bar span:last-child { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
   #interns div { padding: 2px 10px; color: var(--intern); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #interns .none { color: var(--dim); }
-  #tag { position: fixed; right: 10px; bottom: 6px; color: var(--dim); font-size: 11px; }
   #empty { color: var(--user); }
   @media (max-width: 900px) {
     body { overflow: auto; grid-template-rows: auto auto; }
@@ -68,15 +67,12 @@
       <section><h2>일하는 인턴</h2><div id="interns"></div></section>
     </div>
   </main>
-  <div id="tag" hidden>↻ 다시 보기</div>
   <script type="module">
     import { ROOMS } from './art.mjs';
     import { bubbleOf, fmtDur, sceneAt, timeline } from './scene.mjs';
-    import { buckets, pickOps, replayClock, stats } from './ops.mjs';
+    import { buckets, pickOps, shown, stats } from './ops.mjs';
 
     const $ = (id) => document.getElementById(id);
-    const SPEED = 8;          // 다시 보기 배속
-    const HOLD = 3000;        // 다시 보기 끝에서 멈추는 시간
     const MAX_LINES = 200;    // 칸마다 남기는 줄
     const RATE_SIZE = 10000;  // 처리량 막대 하나 = 10초
     const RATE_N = 30;        // 5분
@@ -86,17 +82,21 @@
     let panes = [];
     let reveals = []; // 줄이 올라온 시각(처리량 그래프)
 
-    function makePane(sess, live) {
+    function makePane(sess) {
       const el = document.createElement('section');
       el.className = 'pane';
       const h = document.createElement('h2');
-      h.textContent = `${live ? '● ' : ''}${sess.project} · ${sess.title}`;
+      h.textContent = `● ${sess.project} · ${sess.title}`;
       h.title = h.textContent;
       const log = document.createElement('div');
       log.className = 'log';
+      const wait = document.createElement('div');
+      wait.className = 'line old';
+      wait.textContent = `${hhmmss(Date.now())}  대기 중 — 다음 작업을 기다리는 중`;
+      log.append(wait);
       el.append(h, log);
       $('panes').append(el);
-      const p = { id: sess.id, live, el, log, steps: new Map(), sorted: [], agents: new Map(), tl: timeline([]), lines: new Map(), pending: new Map(), lap: 0, t0: performance.now(), clock: 0, primed: false };
+      const p = { id: sess.id, el, log, wait, steps: new Map(), sorted: [], agents: new Map(), tl: timeline([]), lines: new Map(), pending: new Map(), clock: 0 };
       p.es = new EventSource(`/stream?session=${encodeURIComponent(sess.id)}`);
       p.es.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -108,9 +108,10 @@
         for (const a of msg.agents ?? []) p.agents.set(a.id, a);
         p.sorted = [...p.steps.values()].sort((a, b) => a.t - b.t);
         p.tl = timeline(p.sorted);
-        if (!live) {
-          p.es.close(); // 다시 보기는 한 번 받으면 연결을 놓는다
-          p.t0 = performance.now();
+        // 칸을 열 때 이미 있던 기록은 줄로 띄우지 않는다(연 뒤에 생긴 일만)
+        if (msg.session && !p.primed) {
+          p.primed = true;
+          for (const s of p.sorted) p.lines.set(s.id, null);
         }
       };
       return p;
@@ -121,9 +122,11 @@
       if (s.ok === false) d.classList.add('err');
     }
 
-    function addLine(p, s, quiet) {
+    function addLine(p, s) {
+      p.wait?.remove();
+      p.wait = null;
       const d = document.createElement('div');
-      d.className = `line${quiet ? ' old' : ''}${s.who !== 'main' ? ' sub' : s.kind === 'user' ? ' user' : ''}`;
+      d.className = `line${s.who !== 'main' ? ' sub' : s.kind === 'user' ? ' user' : ''}`;
       const who = s.who !== 'main' ? `↳ ${p.agents.get(s.who)?.role ?? '인턴'} · ` : '';
       d.dataset.base = `${hhmmss(s.t)}  ${who}${bubbleOf(s)}`;
       d.textContent = d.dataset.base + (s.kind === 'tool' ? ' …' : '');
@@ -133,31 +136,17 @@
         if (s.end != null && s.end <= p.clock) finish(d, s);
         else p.pending.set(s.id, d);
       }
-      if (!quiet) reveals.push(Date.now());
+      reveals.push(Date.now());
     }
 
-    function tickPane(p, now) {
-      if (p.live) p.clock = Math.max(Date.now(), p.tl.end);
-      else {
-        const r = replayClock(p.tl, now - p.t0, SPEED, HOLD);
-        p.clock = r.t;
-        if (r.lap !== p.lap) {
-          p.lap = r.lap;
-          p.log.replaceChildren();
-          p.lines.clear();
-          p.pending.clear();
-        }
-      }
-      const fresh = [];
+    function tickPane(p) {
+      p.clock = Math.max(Date.now(), p.tl.end);
+      if (!p.primed) return;
       for (const s of p.sorted) {
-        if (s.t > p.clock) break;
-        if (!p.lines.has(s.id)) fresh.push(s);
+        if (p.lines.has(s.id)) continue;
+        if (shown(s)) addLine(p, s);
+        else p.lines.set(s.id, null);
       }
-      // 실시간 칸을 처음 열 때는 지난 기록 끝부분만 조용히 깔아 둔다(처리량에 안 셈)
-      const quiet = p.live && !p.primed;
-      if (quiet && p.sorted.length) p.primed = true;
-      if (quiet) for (const s of fresh.slice(0, -MAX_LINES)) p.lines.set(s.id, null);
-      for (const s of quiet ? fresh.slice(-MAX_LINES) : fresh) addLine(p, s, quiet);
       for (const [id, d] of p.pending) {
         const s = p.steps.get(id);
         if (s?.end != null && s.end <= p.clock) {
@@ -191,13 +180,12 @@
     }
 
     function tick() {
-      const now = performance.now();
       $('clock').textContent = hhmmss(Date.now());
       const tot = { tools: 0, out: 0, errors: 0, interns: 0 };
       const counts = {};
       const working = [];
       for (const p of panes) {
-        tickPane(p, now);
+        tickPane(p);
         const agents = [...p.agents.values()];
         const st = stats(p.sorted, agents, p.clock);
         for (const k of Object.keys(tot)) tot[k] += st[k];
@@ -238,20 +226,18 @@
         $('status').textContent = '서버에 연결하지 못함';
         return;
       }
-      const pick = pickOps(data.sessions);
-      const live = pick.mode === 'live';
-      const keep = panes.filter((p) => pick.ids.includes(p.id) && p.live === live);
+      const ids = pickOps(data.sessions);
+      const keep = panes.filter((p) => ids.includes(p.id));
       for (const p of panes) {
         if (keep.includes(p)) continue;
         p.es.close();
         p.el.remove();
       }
-      panes = [...keep, ...pick.ids.filter((id) => !keep.some((p) => p.id === id)).map((id) => makePane(data.sessions.find((s) => s.id === id), live))];
-      $('status').textContent = live ? `실시간 · 세션 ${panes.length}개` : `세션 ${panes.length}개 모니터링`;
-      $('tag').hidden = live;
+      panes = [...keep, ...ids.filter((id) => !keep.some((p) => p.id === id)).map((id) => makePane(data.sessions.find((s) => s.id === id)))];
+      $('status').textContent = panes.length ? `실시간 · 세션 ${panes.length}개` : '대기 중';
       const empty = $('empty');
       empty.hidden = panes.length > 0;
-      empty.textContent = data.found ? '세션 기록이 없습니다.' : `클로드 코드 기록을 찾지 못함 (${data.root})`;
+      empty.textContent = data.found ? '지금 일하는 세션이 없습니다. 클로드에게 일을 시키면 여기에 나타납니다.' : `클로드 코드 기록을 찾지 못함 (${data.root})`;
     }
 
     await refresh();
