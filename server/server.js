@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { listSessions, resolveSession } = require('./sessions');
-const { createReader } = require('./tail');
+const { createReader: defaultReader } = require('./tail');
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -28,23 +28,34 @@ function createOfficeServer({
   contextLimit = 200000,
   pollMs = 1000,
   publicDir = path.join(__dirname, '..', 'public'),
+  createReader = defaultReader, // 테스트에서 바꿔 끼운다
 } = {}) {
   const open = new Map(); // 파일 → { reader, clients, gone } (보는 화면이 있는 세션만)
 
-  // 늘어난 줄을 읽어 그 세션을 보는 화면들에 보낸다
+  // 늘어난 줄을 읽어 그 세션을 보는 화면들에 보낸다. 읽다가 에러(파일이 지워지는 중 등)가 나면 이번 틱만 건너뛴다
   function tick(entry) {
-    const { steps, agents, gone } = entry.reader.poll();
+    let polled;
+    try {
+      polled = entry.reader.poll();
+    } catch (err) {
+      if (!entry.failed) console.error('기록 읽기 실패:', err.message);
+      entry.failed = true;
+      return false;
+    }
+    entry.failed = false;
+    const { steps, agents, gone } = polled;
     if (gone) {
       if (!entry.gone) {
         entry.gone = true;
         for (const c of entry.clients) c.write(sse({ gone: true }));
       }
-      return;
+      return true;
     }
     if (steps.length || agents.length) {
       const msg = sse({ steps, agents });
       for (const c of entry.clients) c.write(msg);
     }
+    return true;
   }
 
   function stream(res, query) {
@@ -56,7 +67,11 @@ function createOfficeServer({
       entry = { reader: createReader(file), clients: new Set(), gone: false };
       open.set(file, entry);
     }
-    tick(entry); // 이미 보던 화면들에 밀린 것부터 보내고, 새 화면에는 전부
+    // 이미 보던 화면들에 밀린 것부터 보내고, 새 화면에는 전부. 처음 읽기부터 실패하면 500
+    if (!tick(entry) && entry.clients.size === 0) {
+      open.delete(file);
+      return send(res, 500, 'error');
+    }
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     const all = entry.reader.all();
     res.write(sse({ session: id, title: entry.reader.title, contextLimit, steps: all.steps, agents: all.agents, gone: entry.gone }));
@@ -93,13 +108,21 @@ function createOfficeServer({
     } catch {
       return send(res, 400, 'bad url');
     }
+    // 다른 사이트가 자기 도메인을 127.0.0.1로 돌려(DNS 리바인딩) 기록을 읽지 못하게 Host를 본다
+    const port = server.address()?.port;
+    if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) return send(res, 403, 'forbidden');
     if (req.method !== 'GET') return send(res, 404, 'not found');
-    if (pathname === '/sessions') {
-      const sessions = listSessions(root);
-      return json(res, 200, { root, found: sessions !== null, sessions: sessions ?? [] });
+    try {
+      if (pathname === '/sessions') {
+        const sessions = listSessions(root);
+        return json(res, 200, { root, found: sessions !== null, sessions: sessions ?? [] });
+      }
+      if (pathname === '/stream') return stream(res, query);
+      if (pathname === '/step') return step(res, query);
+    } catch (err) {
+      console.error('요청 처리 실패:', err.message);
+      return send(res, 500, 'error'); // 서버는 죽지 않는다
     }
-    if (pathname === '/stream') return stream(res, query);
-    if (pathname === '/step') return step(res, query);
     serveFile(pathname, res);
   });
 

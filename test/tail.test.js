@@ -92,6 +92,32 @@ test('reader: meta가 없는 옛 인턴은 이름 "인턴", 마지막 단계에�
   assert.deepEqual(a, { id: 'old1', role: '인턴', type: null, parentStep: null, start: Date.parse(at(1)), end: Date.parse(at(3)) });
 });
 
+test('reader: meta에 finished가 없으면(옛 형식) 파일이 1분 넘게 안 바뀐 인턴은 끝난 것, 최근에 바뀌면 일하는 중', (t) => {
+  const d = tmp(t);
+  const f = path.join(d, 'sess.jsonl');
+  fs.writeFileSync(f, tool(0, 'call1', 'Agent', { description: 'Scan' }));
+  const sub = path.join(d, 'sess', 'subagents');
+  fs.mkdirSync(sub, { recursive: true });
+  const file = path.join(sub, 'agent-abc.jsonl');
+  fs.writeFileSync(file, tool(1, 's1', 'Read', { file_path: 'a.js' }) + result(5, 's1', 'ok'));
+  fs.writeFileSync(path.join(sub, 'agent-abc.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'Scan', toolUseId: 'call1' }));
+  assert.equal(createReader(f).poll().agents[0].end, null); // 방금 쓴 파일 = 진행 중일 수 있다
+  const old = new Date(Date.now() - 5 * 60 * 1000);
+  fs.utimesSync(file, old, old);
+  assert.equal(createReader(f).poll().agents[0].end, Date.parse(at(5)));
+});
+
+test('reader: 한 번에 읽는 양(chunk)보다 큰 기록도 poll 한 번에 끝까지 읽는다', (t) => {
+  const f = path.join(tmp(t), 's.jsonl');
+  fs.writeFileSync(f, human(0, '하나') + human(1, '둘') + human(2, '셋'));
+  const tail = createTail(f, 40);
+  const first = tail.read();
+  assert.ok(first.length < 3);
+  assert.equal(tail.behind, true);
+  const r = createReader(f, { chunk: 40 });
+  assert.deepEqual(r.poll().steps.map((s) => s.summary), ['하나', '둘', '셋']);
+});
+
 test('reader: 파일을 새로 써서 짧아져도 이미 본 줄은 다시 안 나온다(uuid)', (t) => {
   const f = path.join(tmp(t), 's.jsonl');
   const a = human(0, '하나');

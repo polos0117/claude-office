@@ -125,3 +125,51 @@ test('서버는 이 PC(127.0.0.1)에서만 접속을 받는다', async (t) => {
   assert.equal((await fetch(`http://127.0.0.1:${port}/sessions`)).status, 200);
   await assert.rejects(fetch(`http://${lan.address}:${port}/sessions`));
 });
+
+test('읽다가 에러가 나도 서버는 죽지 않는다(stream·step은 500, 틱은 건너뜀)', async (t) => {
+  const { root } = session(t, human(0, '안녕'));
+  let boom = false;
+  const fake = () => ({
+    poll() {
+      if (boom) throw new Error('boom');
+      return { steps: [], agents: [], gone: false };
+    },
+    all: () => ({ steps: [], agents: [] }),
+    detail() {
+      throw new Error('boom');
+    },
+    title: null,
+  });
+  const base = await start(t, root, { createReader: fake });
+  boom = true;
+  assert.equal((await fetch(`${base}/stream?session=C--p/s1`)).status, 500);
+  assert.equal((await fetch(`${base}/step?session=C--p/s1&step=main:0`)).status, 500);
+  boom = false;
+  const ac = new AbortController();
+  t.after(() => ac.abort());
+  const res = await fetch(`${base}/stream?session=C--p/s1`, { signal: ac.signal });
+  await sseReader(res)();
+  boom = true;
+  await new Promise((r) => setTimeout(r, 350)); // 틱 몇 번이 에러를 내도
+  assert.equal((await fetch(`${base}/sessions`)).status, 200);
+});
+
+test('Host가 이 PC 주소가 아니면 403(DNS 리바인딩 막기)', async (t) => {
+  const { root } = session(t, human(0, '안녕'));
+  const base = await start(t, root);
+  const { port } = new URL(base);
+  const get = (host) =>
+    new Promise((ok, no) =>
+      require('node:http')
+        .get({ host: '127.0.0.1', port, path: '/sessions', headers: { Host: host } }, (res) => {
+          res.resume();
+          ok(res.statusCode);
+        })
+        .on('error', no),
+    );
+  assert.equal(await get(`evil.example:${port}`), 403);
+  assert.equal(await get('evil.example'), 403);
+  assert.equal(await get('localhost:1'), 403);
+  assert.equal(await get(`127.0.0.1:${port}`), 200);
+  assert.equal(await get(`localhost:${port}`), 200);
+});

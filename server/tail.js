@@ -4,12 +4,16 @@ const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { createParser } = require('./parse');
 
-function createTail(file) {
+const CHUNK = 16 * 1024 * 1024; // 한 번에 읽는 최대 바이트(큰 기록도 문자열 하나로 만들지 않는다)
+const LIVE_MS = 60 * 1000;      // meta에 finished가 없는 인턴: 이 안에 파일이 바뀌었으면 일하는 중
+
+function createTail(file, chunk = CHUNK) {
   let pos = 0;
+  let behind = false; // 파일 끝까지 아직 못 읽음
   let rest = '';
   let dec = new StringDecoder('utf8'); // 한글이 읽기 경계에서 잘려도 다음 번에 이어 붙인다
   return {
-    // 완성된 줄 목록. 파일이 없으면 null
+    // 완성된 줄 목록(최대 chunk 바이트어치). 파일이 없으면 null
     read() {
       let size;
       try {
@@ -23,8 +27,11 @@ function createTail(file) {
         rest = '';
         dec = new StringDecoder('utf8');
       }
-      if (size === pos) return [];
-      const buf = Buffer.alloc(size - pos);
+      if (size === pos) {
+        behind = false;
+        return [];
+      }
+      const buf = Buffer.alloc(Math.min(chunk, size - pos));
       const fd = fs.openSync(file, 'r');
       let off = 0;
       try {
@@ -37,17 +44,31 @@ function createTail(file) {
         fs.closeSync(fd);
       }
       pos += off;
+      behind = off > 0 && pos < size;
       rest += dec.write(buf.subarray(0, off));
       const lines = rest.split('\n');
       rest = lines.pop();
       return lines.filter((l) => l.trim());
     },
+    get behind() {
+      return behind;
+    },
   };
 }
 
-function createReader(file) {
+// 끝까지 따라잡을 때까지 chunk씩 읽어 줄마다 fn. 파일이 없으면 false
+function drain(tail, fn) {
+  do {
+    const lines = tail.read();
+    if (lines === null) return false;
+    for (const l of lines) fn(l);
+  } while (tail.behind);
+  return true;
+}
+
+function createReader(file, { chunk = CHUNK } = {}) {
   const subDir = path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents');
-  const main = { tail: createTail(file), parser: createParser('main') };
+  const main = { tail: createTail(file, chunk), parser: createParser('main') };
   const subs = new Map(); // agentId → { tail, parser, info }
   let gone = false;
 
@@ -72,20 +93,29 @@ function createReader(file) {
       type: typeof meta?.agentType === 'string' ? meta.agentType : null,
       parentStep: (meta && main.parser.stepOfTool(meta.toolUseId)?.id) ?? null,
       start,
-      end: meta && meta.finished !== true ? null : last, // meta가 없으면 마지막 단계에서 끝난 것으로 본다
+      end: running(id, meta) ? null : last,
     };
+  }
+
+  // meta가 없으면 끝난 것. finished:false면 일하는 중. finished가 없는 옛 형식은 최근 1분 안에 파일이 바뀌었을 때만 일하는 중
+  function running(id, meta) {
+    if (!meta || meta.finished === true) return false;
+    if (meta.finished === false) return true;
+    try {
+      return Date.now() - fs.statSync(path.join(subDir, `agent-${id}.jsonl`)).mtimeMs < LIVE_MS;
+    } catch {
+      return false;
+    }
   }
 
   // 늘어난 줄을 읽어 새로 생기거나 바뀐 단계·인턴만 돌려준다
   function poll() {
     if (gone) return { steps: [], agents: [], gone: true };
-    const lines = main.tail.read();
-    if (lines === null) {
+    const changed = new Set();
+    if (!drain(main.tail, (l) => { for (const s of main.parser.line(l)) changed.add(s); })) {
       gone = true;
       return { steps: [], agents: [], gone: true };
     }
-    const changed = new Set();
-    for (const l of lines) for (const s of main.parser.line(l)) changed.add(s);
     let files = [];
     try {
       files = fs.readdirSync(subDir);
@@ -98,10 +128,10 @@ function createReader(file) {
       if (!m) continue;
       let sub = subs.get(m[1]);
       if (!sub) {
-        sub = { tail: createTail(path.join(subDir, f)), parser: createParser(m[1]), info: null };
+        sub = { tail: createTail(path.join(subDir, f), chunk), parser: createParser(m[1]), info: null };
         subs.set(m[1], sub);
       }
-      for (const l of sub.tail.read() ?? []) for (const s of sub.parser.line(l)) changed.add(s);
+      drain(sub.tail, (l) => { for (const s of sub.parser.line(l)) changed.add(s); });
       const info = agentInfo(m[1], sub);
       if (JSON.stringify(info) !== JSON.stringify(sub.info)) {
         sub.info = info;
