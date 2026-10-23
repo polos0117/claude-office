@@ -1,0 +1,36 @@
+# claude-office
+
+클로드 코드에 일을 시키면 무엇을 어떤 순서로 하는지, 세션 기록을 픽셀아트 사무실로 보여 준다.
+
+- 끝난 세션: ▶ 재생(×1·×8·×32), 띠를 끌어 원하는 순간으로. 5초 넘는 빈 시간은 1초로 줄인다.
+- 진행 중인 세션(최근 60초 안에 기록이 바뀐 세션): 1~2초 늦게 실시간으로 따라간다.
+- 클로드(주황 셔츠)는 도구를 쓸 때마다 그 방으로 간다. 하위 에이전트는 인턴(보라 셔츠).
+
+| 방 | 도구 |
+|---|---|
+| 서가 | Read |
+| 내 책상 | Edit, Write |
+| 서버실 | Bash, PowerShell |
+| 찾기 책상 | Grep, Glob |
+| 창문 | WebFetch, WebSearch, 브라우저 |
+| 매뉴얼 선반 | Skill, ToolSearch |
+| 회의실 | 사용자 요청, 질문, 답변 |
+| 인턴 자리 | Agent |
+| 기타 | 그 밖의 도구 |
+
+## 실행
+
+```bash
+npm start            # http://localhost:7800
+npm test
+```
+
+환경 변수: `PORT`(7800), `CLAUDE_PROJECTS`(기본 `~/.claude/projects`), `CONTEXT_LIMIT`(문맥 막대 기준, 기본 200000).
+
+## 알아둘 것
+
+- 기록(`~/.claude/projects`)은 읽기만 한다. 클로드 코드 설정·훅은 건드리지 않는다.
+- 기록에 코드·경로·명령 결과가 그대로 있으므로 이 PC(127.0.0.1)에서만 열린다.
+- 보이는 것은 기록에 남은 과정이다(모델 내부 계산이 아니다). 생각 내용은 대부분 기록에 남지 않아 시간만 보인다. 문맥 막대는 추정이다.
+- 기록 읽기 규칙은 공식 `session-report` 스킬(Apache 2.0)의 정리를 참고했다.
+- 그림: [Kenney](https://kenney.nl) Roguelike Indoor·Roguelike Characters (CC0, `public/art/LICENSE-kenney.txt`).

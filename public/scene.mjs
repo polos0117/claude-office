@@ -57,7 +57,10 @@ export function bubbleOf(s) {
 export function fmtDur(ms) {
   if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}초`;
   const sec = Math.round(ms / 1000);
-  return `${Math.floor(sec / 60)}분 ${sec % 60}초`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}분 ${sec % 60}초`;
+  const min = Math.floor(sec / 60);
+  if (min < 24 * 60) return `${Math.floor(min / 60)}시간 ${min % 60}분`;
+  return `${Math.floor(min / 1440)}일 ${Math.floor((min % 1440) / 60)}시간`;
 }
 
 // clock(실제 시각 ms) 순간의 장면. steps는 t 순

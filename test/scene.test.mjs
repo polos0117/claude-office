@@ -93,4 +93,6 @@ test('bubbleOf·markers·fmtDur', () => {
   assert.equal(fmtDur(9500), '9.5초');
   assert.equal(fmtDur(42000), '42초');
   assert.equal(fmtDur(64000), '1분 4초');
+  assert.equal(fmtDur((3 * 60 + 5) * 60000 + 30000), '3시간 5분'); // 며칠짜리 세션도 읽히게
+  assert.equal(fmtDur((2 * 24 + 3) * 3600000 + 59000), '2일 3시간');
 });
